@@ -2163,6 +2163,13 @@ local function tick(request)
             end
         end
         inject_lobby_bots(request)
+        local core = state.cranked_core or rawget(_G, "CrankedCore")
+        if type(core) == "table" and type(core.ResetTimer) == "function" then
+            core.active_controller = request.controller or 0
+            core.state = 0
+            core.inducer_disabled = false
+            core.last_kills = 0
+        end
         state.phase="starting"
         request.close_frontend_on_transition=true
         submit(request,"xpartygo")
@@ -2673,6 +2680,11 @@ if state.cranked_button and state.cranked_button.install_guards then
         local output=rawget(_G,"DebugPrint")
         if type(output)=="function" then pcall(output,"k1 cranked button: guard installation failed: "..tostring(reason)) end
     end
+end
+local ok_core, core_module = pcall(require, "cranked-core")
+local cranked = (ok_core and type(core_module) == "table") and core_module or rawget(_G, "CrankedCore")
+if type(cranked) == "table" then
+    state.cranked_core = cranked
 end
 if catalogue.publish then catalogue.publish("frontEnd.playlists.category") end
 state.catalogue=catalogue
