@@ -21,7 +21,7 @@ El proyecto se encuentra en transicion desde la fase conceptual hacia una arquit
 
 - [x] **Fase 1 (UI e integracion inicial):** Registro de categoria en el menu local del lobby y asignacion de identificadores visuales en LUI.
 - [x] **Fase 2 (Motor de Gameplay):** Implementacion de la maquina de estados de Cranked, hooks de eliminacion de entidades y temporizador regresivo.
-- [ ] **Fase 3 (Interfaz y Feedback):** Indicadores visuales en pantalla (HUD) del tiempo restante, alertas audibles y efectos de detonacion.
+- [x] **Fase 3 (Interfaz y Feedback):** Indicadores visuales en pantalla (HUD) del tiempo restante, alertas audibles y efectos de detonacion.
 - [ ] **Fase 4 (Ajuste y Dificultad):** Modificadores dinamicos segun la ronda y escalado de dificultad por cantidad de jugadores.
 
 ---

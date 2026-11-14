@@ -2170,6 +2170,10 @@ local function tick(request)
             core.inducer_disabled = false
             core.last_kills = 0
         end
+        local hud = state.cranked_hud or rawget(_G, "CrankedHUD")
+        if type(hud) == "table" and type(hud.StartTimerLoop) == "function" then
+            pcall(hud.StartTimerLoop)
+        end
         state.phase="starting"
         request.close_frontend_on_transition=true
         submit(request,"xpartygo")
@@ -2685,6 +2689,11 @@ local ok_core, core_module = pcall(require, "cranked-core")
 local cranked = (ok_core and type(core_module) == "table") and core_module or rawget(_G, "CrankedCore")
 if type(cranked) == "table" then
     state.cranked_core = cranked
+end
+local ok_hud, hud_module = pcall(require, "cranked-hud")
+local hud = (ok_hud and type(hud_module) == "table") and hud_module or rawget(_G, "CrankedHUD")
+if type(hud) == "table" then
+    state.cranked_hud = hud
 end
 if catalogue.publish then catalogue.publish("frontEnd.playlists.category") end
 state.catalogue=catalogue
