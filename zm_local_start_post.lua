@@ -2163,16 +2163,23 @@ local function tick(request)
             end
         end
         inject_lobby_bots(request)
-        local core = state.cranked_core or rawget(_G, "CrankedCore")
-        if type(core) == "table" and type(core.ResetTimer) == "function" then
-            core.active_controller = request.controller or 0
-            core.state = 0
-            core.inducer_disabled = false
-            core.last_kills = 0
+        local is_cranked = state.is_cranked or rawget(_G, "CRANKED_FORCE_ENABLED") == true
+        if not is_cranked and type(state.cranked_button) == "table" and type(selected_button) == "function" then
+            local ok_s, sel = pcall(selected_button, request.controller)
+            if ok_s and sel then is_cranked = true end
         end
-        local hud = state.cranked_hud or rawget(_G, "CrankedHUD")
-        if type(hud) == "table" and type(hud.StartTimerLoop) == "function" then
-            pcall(hud.StartTimerLoop)
+        if is_cranked then
+            local core = state.cranked_core or rawget(_G, "CrankedCore")
+            if type(core) == "table" and type(core.ResetTimer) == "function" then
+                core.active_controller = request.controller or 0
+                core.state = 0
+                core.inducer_disabled = false
+                core.last_kills = 0
+            end
+            local hud = state.cranked_hud or rawget(_G, "CrankedHUD")
+            if type(hud) == "table" and type(hud.StartTimerLoop) == "function" then
+                pcall(hud.StartTimerLoop)
+            end
         end
         state.phase="starting"
         request.close_frontend_on_transition=true
@@ -2472,9 +2479,7 @@ do
                         -- Preserve native category-row sentinels/indices. A category
                         -- ID is not a playlist ID. Identity is the new playlistRef.
                         put(card,"name","CRANKED")
-                        put(card,"desc","Mode preview - maps coming next.")
-                        -- Do not expose Standard's map children through the preview.
-                        if card.rowData~=nil then card.rowData={} end
+                        put(card,"desc","Modo Frenetico Cranked con temporizador regresivo.")
                         result[#result+1]=card;changed=true
                     end
                 else
@@ -2508,16 +2513,11 @@ do
         end)
         -- Install these LAST, outside the original navigation/start wrappers.
         button.install_guards=function()
-        hook(playlist,"0xe415d7bbba2b8a82",function(original)
-            return function(category,index,...)
-                if category==button.id then placeholder(state.controller);return end
-                return original(category,index,...)
-            end
-        end)
         hook(playlist,"DoPlaylistId",function(original)
             return function(id,...)
                 if id==button.id or id==1000002001 or selected_button(state.controller) then
-                    log("preview intercepted before DoPlaylistId");placeholder(state.controller);return
+                    state.is_cranked=true
+                    log("cranked match armed in DoPlaylistId")
                 end
                 return original(id,...)
             end
@@ -2526,7 +2526,8 @@ do
             return function(name,parent,controller,...)
                 if (is(name,"zmmapselection") or is(name,"zmmatchsettings") or is(name,"zmloadoutconfirmation")
                     or is(name,"zmpubliclobby")) and selected_button(controller) then
-                    log("preview intercepted before navigation: "..tostring(name));placeholder(controller);return
+                    state.is_cranked=true
+                    log("cranked match navigating: "..tostring(name))
                 end
                 return original(name,parent,controller,...)
             end

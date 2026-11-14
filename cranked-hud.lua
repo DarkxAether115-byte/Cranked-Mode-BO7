@@ -13,6 +13,7 @@ local CrankedHUD = {
     bar_bg = nil,
     bar_fill = nil,
     timer_element = nil,
+    timer_running = false,
     last_sfx_second = -1,
     blink_counter = 0
 }
@@ -254,6 +255,7 @@ function CrankedHUD.Destroy()
     CrankedHUD.bar_bg = nil
     CrankedHUD.bar_fill = nil
     CrankedHUD.timer_element = nil
+    CrankedHUD.timer_running = false
     CrankedHUD.active = false
     CrankedHUD.last_sfx_second = -1
     CrankedHUD.blink_counter = 0
@@ -276,9 +278,9 @@ function CrankedHUD.Update()
     local core = rawget(_G, "CrankedCore")
     if type(core) ~= "table" then return end
 
-    -- Drive core state machine and countdown tick (50ms interval)
+    -- Drive core state machine and countdown tick (50ms interval, skip redundant IsInGame check)
     if type(core.Tick) == "function" then
-        pcall(core.Tick, 0.05)
+        pcall(core.Tick, 0.05, true)
     end
 
     local state = tonumber(core.state) or 0
@@ -286,13 +288,7 @@ function CrankedHUD.Update()
     local max_time = tonumber(core.max_time) or 30
     if max_time <= 0 then max_time = 30 end
 
-    local party_count = 1
-    if type(core.party_count) == "number" then
-        party_count = core.party_count
-    elseif type(core.GetPartyCount) == "function" then
-        local ok_cnt, val_cnt = pcall(core.GetPartyCount)
-        if ok_cnt and tonumber(val_cnt) then party_count = tonumber(val_cnt) end
-    end
+    local party_count = tonumber(core.party_count) or 1
 
     CrankedHUD.blink_counter = (CrankedHUD.blink_counter + 1) % 20
     local is_blink_on = CrankedHUD.blink_counter < 10
@@ -404,8 +400,12 @@ function CrankedHUD.Update()
     end
 end
 
--- Initialize refresh loop (20Hz / 50ms)
+-- Initialize refresh loop (20Hz / 50ms) with idempotency guard
 function CrankedHUD.StartTimerLoop()
+    if CrankedHUD.timer_element ~= nil or CrankedHUD.timer_running then
+        return true
+    end
+
     local parent = get_parent_container()
     if not parent then return false end
 
@@ -418,7 +418,10 @@ function CrankedHUD.StartTimerLoop()
                 CrankedHUD.Update()
             end
         })
-        if ok then return true end
+        if ok then
+            CrankedHUD.timer_running = true
+            return true
+        end
     end
 
     -- Pattern 2: LUI.UITimer element registration
@@ -437,6 +440,7 @@ function CrankedHUD.StartTimerLoop()
                     pcall(parent.addElement, parent, timer_inst)
                 end
                 CrankedHUD.timer_element = timer_inst
+                CrankedHUD.timer_running = true
                 return true
             end
         end

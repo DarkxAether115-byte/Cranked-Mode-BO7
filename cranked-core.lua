@@ -217,11 +217,12 @@ function CrankedCore.DetonatePlayer()
 end
 
 -- Main tick function (called periodically with delta seconds)
-function CrankedCore.Tick(delta_seconds)
+function CrankedCore.Tick(delta_seconds, already_in_game)
     delta_seconds = tonumber(delta_seconds) or 0.05
 
-    -- Check if we are inside a game
-    if not CrankedCore.IsInGame() then
+    -- Check if we are inside a game (skip redundant engine probe if caller already verified)
+    local in_game = (already_in_game == true) or CrankedCore.IsInGame()
+    if not in_game then
         CrankedCore.state = 0
         CrankedCore.inducer_disabled = false
         CrankedCore.last_kills = 0
