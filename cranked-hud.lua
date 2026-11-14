@@ -286,6 +286,14 @@ function CrankedHUD.Update()
     local max_time = tonumber(core.max_time) or 30
     if max_time <= 0 then max_time = 30 end
 
+    local party_count = 1
+    if type(core.party_count) == "number" then
+        party_count = core.party_count
+    elseif type(core.GetPartyCount) == "function" then
+        local ok_cnt, val_cnt = pcall(core.GetPartyCount)
+        if ok_cnt and tonumber(val_cnt) then party_count = tonumber(val_cnt) end
+    end
+
     CrankedHUD.blink_counter = (CrankedHUD.blink_counter + 1) % 20
     local is_blink_on = CrankedHUD.blink_counter < 10
 
@@ -299,7 +307,8 @@ function CrankedHUD.Update()
 
     -- State 1: Waiting for first kill
     if state == 1 then
-        safe_set_text(CrankedHUD.status_label, "ESPERA PRIMER KILL")
+        local wait_text = (party_count > 1) and "ESPERA PRIMER KILL (COOP)" or "ESPERA PRIMER KILL"
+        safe_set_text(CrankedHUD.status_label, wait_text)
         safe_set_rgb(CrankedHUD.status_label, 0.4, 0.8, 0.9)
         safe_set_alpha(CrankedHUD.status_label, 0.8)
 
@@ -318,7 +327,12 @@ function CrankedHUD.Update()
 
     -- State 2: Cranked Active
     if state == 2 then
-        safe_set_text(CrankedHUD.status_label, "CRANKED")
+        local is_ultra = (core.is_ultra_cranked == true) or ((tonumber(core.current_round) or 1) >= 31)
+        if is_ultra then
+            safe_set_text(CrankedHUD.status_label, "ULTRA CRANKED")
+        else
+            safe_set_text(CrankedHUD.status_label, "CRANKED")
+        end
         safe_set_text(CrankedHUD.timer_label, string.format("%.1fs", math.max(0, current_time)))
 
         -- Color gradient by threat level
@@ -346,8 +360,15 @@ function CrankedHUD.Update()
             end
         end
 
+        local status_alpha = alpha
+        if is_ultra then
+            -- Dynamic fast blinking for ULTRA CRANKED status label
+            local fast_blink = (CrankedHUD.blink_counter % 4) < 2
+            status_alpha = fast_blink and 1.0 or 0.25
+        end
+
         safe_set_rgb(CrankedHUD.status_label, r, g, b)
-        safe_set_alpha(CrankedHUD.status_label, alpha)
+        safe_set_alpha(CrankedHUD.status_label, status_alpha)
 
         safe_set_rgb(CrankedHUD.timer_label, r, g, b)
         safe_set_alpha(CrankedHUD.timer_label, alpha)

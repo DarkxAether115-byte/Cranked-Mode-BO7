@@ -5,11 +5,14 @@
 ]]
 
 local CrankedCore = {
-    version = "1.0.1",
+    version = "1.1.0",
     state = 0, -- 0: Inactive/Lobby, 1: Waiting First Kill, 2: Active, 3: Detonated
     current_time = 0,
     max_time = 30,
     current_round = 1,
+    party_count = 1,
+    difficulty = "classic", -- "casual", "classic", "hardcore"
+    is_ultra_cranked = false,
     last_kills = 0,
     inducer_disabled = false,
     active_controller = 0,
@@ -80,20 +83,69 @@ function CrankedCore.DisableRampageInducer(controller)
     end
 end
 
--- Calculate time ceiling based on current round
-function CrankedCore.GetMaxTimeForRound(round_number)
-    local r = tonumber(round_number) or 1
-    if r <= 5 then
-        return 30
-    elseif r <= 10 then
-        return 25
-    elseif r <= 15 then
-        return 20
-    elseif r <= 20 then
-        return 15
-    else
-        return 10
+-- Read player count from DataSources
+function CrankedCore.GetPartyCount(controller)
+    controller = controller or CrankedCore.active_controller or 0
+    local data_sources = rawget(_G, "_DataSources") or rawget(_G, "DataSources")
+    if type(data_sources) ~= "table" then return 1 end
+
+    local always_loaded = rawget(data_sources, "alwaysLoaded") or rawget(data_sources, "always_loaded")
+    if type(always_loaded) == "table" then
+        local private_party = rawget(always_loaded, "privateParty") or rawget(always_loaded, "private_party")
+        if type(private_party) == "table" then
+            local count_source = rawget(private_party, "count") or rawget(private_party, "partyCount")
+            if type(count_source) == "table" and type(rawget(count_source, "GetValue")) == "function" then
+                local ok, val = safe_call(count_source.GetValue, count_source, controller)
+                if ok and tonumber(val) then
+                    return math.max(1, math.floor(tonumber(val)))
+                end
+            end
+        end
     end
+    return 1
+end
+
+-- Calculate time ceiling based on current round, party count, and difficulty preset
+function CrankedCore.GetMaxTimeForRound(round_number, party_count, difficulty)
+    local r = tonumber(round_number) or 1
+    local count = tonumber(party_count) or CrankedCore.party_count or 1
+    local diff = tostring(difficulty or CrankedCore.difficulty or "classic"):lower()
+
+    -- Curva base (1 jugador, classic)
+    local base_time
+    if r <= 5 then
+        base_time = 30
+    elseif r <= 10 then
+        base_time = 25
+    elseif r <= 15 then
+        base_time = 20
+    elseif r <= 20 then
+        base_time = 15
+    elseif r <= 30 then
+        base_time = 10
+    else
+        base_time = 7.5 -- 31+: Ultra Cranked
+    end
+
+    -- Escalado por escuadron (party_count)
+    local squad_bonus = 0
+    if count == 2 then
+        squad_bonus = 3
+    elseif count >= 3 then
+        squad_bonus = 5
+    end
+
+    -- Modificador por preset de dificultad
+    local diff_mod = 0
+    if diff == "casual" then
+        diff_mod = 5
+    elseif diff == "hardcore" then
+        diff_mod = -5
+    end
+
+    local final_time = base_time + squad_bonus + diff_mod
+    -- Minimo 5.0s absoluto
+    return math.max(5.0, final_time)
 end
 
 -- Read current round from DataSources
@@ -135,10 +187,23 @@ function CrankedCore.GetPlayerKills()
     return 0
 end
 
+-- Add bonus time (co-op assists, challenges) without exceeding max_time
+function CrankedCore.AddBonusTime(seconds)
+    local sec = tonumber(seconds) or 0
+    if sec <= 0 then return end
+    CrankedCore.current_time = math.min(CrankedCore.max_time, CrankedCore.current_time + sec)
+end
+
 -- Reset timer to current round limit
 function CrankedCore.ResetTimer()
     CrankedCore.current_round = CrankedCore.GetRoundNumber()
-    CrankedCore.max_time = CrankedCore.GetMaxTimeForRound(CrankedCore.current_round)
+    CrankedCore.party_count = CrankedCore.GetPartyCount(CrankedCore.active_controller)
+    CrankedCore.is_ultra_cranked = (CrankedCore.current_round >= 31)
+    CrankedCore.max_time = CrankedCore.GetMaxTimeForRound(
+        CrankedCore.current_round,
+        CrankedCore.party_count,
+        CrankedCore.difficulty
+    )
     CrankedCore.current_time = CrankedCore.max_time
     CrankedCore.detonation_elapsed = 0
 end
@@ -161,6 +226,7 @@ function CrankedCore.Tick(delta_seconds)
         CrankedCore.inducer_disabled = false
         CrankedCore.last_kills = 0
         CrankedCore.detonation_elapsed = 0
+        CrankedCore.is_ultra_cranked = false
         return
     end
 
@@ -175,10 +241,7 @@ function CrankedCore.Tick(delta_seconds)
     if CrankedCore.state == 0 then
         CrankedCore.state = 1
         CrankedCore.last_kills = current_kills
-        CrankedCore.current_round = CrankedCore.GetRoundNumber()
-        CrankedCore.max_time = CrankedCore.GetMaxTimeForRound(CrankedCore.current_round)
-        CrankedCore.current_time = CrankedCore.max_time
-        CrankedCore.detonation_elapsed = 0
+        CrankedCore.ResetTimer()
         return
     end
 
