@@ -926,6 +926,21 @@ local function install_catalogue()
                 target.prefix=prefix;target.count=n;target.category=category_spec.index
             end
         end
+        -- Resolve only CRANKED's native Astra card from the actual Standard row.
+        -- Work on an invocation-local copy; never alter the source category or spec.
+        for i,addition in ipairs(additions) do
+            if addition.cranked_card_from_template then
+                local template=targets[addition.template_id]
+                local prefix=template.source_prefix or template.prefix
+                if read(prefix..".mapName."..template.position)~=addition.map then
+                    error("CRANKED native card source map differs")
+                end
+                local reference=read(prefix..".playMenuRef."..template.position)
+                if reference==nil or reference=="" then return end
+                local resolved=copy(addition);resolved.play_menu_ref=reference
+                additions[i]=resolved
+            end
+        end
         for _,addition in ipairs(additions) do
             local existing_row=occupied[addition.id]
             if existing_row and existing_row.prefix~=targets[addition.template_id].prefix then
@@ -955,6 +970,11 @@ local function install_catalogue()
                 elseif field=="playMenuRef" then expected=addition.play_menu_ref
                 elseif field=="isZMSurvivalPlaylist" and data.records[addition.id].source_gametype=="local_zm_rb_r_mod_survival" then expected=true
                 else expected=read((template.source_prefix or template.prefix).."."..field.."."..template.position) end
+                -- Only the new Cursed sibling normalizes its own copied tier fields.
+                if addition.cranked_cursed and expected==-1 then
+                    if field=="ZMCursedTierMin" then expected=0
+                    elseif field=="ZMCursedTierMax" then expected=3 end
+                end
                 if actual~=expected then
                     local previous=catalogue.by_id[addition.id]
                     if field~="isOneParty" or not squad_templates[addition.id] or not previous
@@ -1002,6 +1022,10 @@ local function install_catalogue()
             end
             row.ID=addition.id;row.index=position;row.mapName=addition.map
             row.playMenuRef=addition.play_menu_ref;row.name=title
+            if addition.cranked_cursed then
+                if row.ZMCursedTierMin==-1 then row.ZMCursedTierMin=0 end
+                if row.ZMCursedTierMax==-1 then row.ZMCursedTierMax=3 end
+            end
             if data.records[addition.id].source_gametype=="local_zm_rb_r_mod_survival" then row.isZMSurvivalPlaylist=true end
             if description~=nil then row.desc=localize(description) end
             row.image=member(card,addition.image_key) or addition.image
@@ -2163,26 +2187,21 @@ local function tick(request)
             end
         end
         inject_lobby_bots(request)
-        local is_cranked = state.is_cranked or rawget(_G, "CRANKED_FORCE_ENABLED") == true
-        if not is_cranked and type(state.cranked_button) == "table" and type(selected_button) == "function" then
-            local ok_s, sel = pcall(selected_button, request.controller)
-            if ok_s and sel then is_cranked = true end
-        end
-        if is_cranked then
-            local core = state.cranked_core or rawget(_G, "CrankedCore")
-            if type(core) == "table" and type(core.ResetTimer) == "function" then
-                core.active_controller = request.controller or 0
-                core.state = 0
-                core.inducer_disabled = false
-                core.last_kills = 0
+        state.phase="starting"
+        request.close_frontend_on_transition=true
+        if request.record and request.record.local_mode == "CRANKED" then
+            local core = rawget(_G, "CrankedCore")
+            if type(core) == "table" and type(core.StartMatch) == "function" then
+                local ctrl = request.controller or 0
+                if type(core.SetController) == "function" then core.SetController(ctrl) end
+                local is_cursed = (request.record.local_variant == "CURSED")
+                core.StartMatch(ctrl, is_cursed)
             end
-            local hud = state.cranked_hud or rawget(_G, "CrankedHUD")
+            local hud = rawget(_G, "CrankedHUD")
             if type(hud) == "table" and type(hud.StartTimerLoop) == "function" then
                 pcall(hud.StartTimerLoop)
             end
         end
-        state.phase="starting"
-        request.close_frontend_on_transition=true
         submit(request,"xpartygo")
     end
 end
@@ -2353,66 +2372,57 @@ end
 refresh_battlepass_profile()
     refresh_mrp_filter()
     refresh_party_recovery()
--- CRANKED phase 1: mode card only. No playlists, maps or gameplay records.
+-- CRANKED: retain its existing category; publish Ashes through the local catalogue.
+-- No copied UI rows, cache invalidation or Preview navigation interception.
 do
-    local button={ref="kronos_local_category_cranked",id=1000002000,
-        source="sat_zm_category_classic",phase="installing",shown=0,lines=0}
+    local button={ref="sat_zm_category_cranked",id=1000001003,
+        source="sat_zm_category_classic",solo=1000002001,squad=1000002002,phase="installing"}
     state.cranked_button=button
     local function log(message)
-        if button.message==message then return end
-        button.message=message
-        if button.lines>=20 then return end
-        button.lines=button.lines+1
         local output=rawget(_G,"DebugPrint")
-        if type(output)=="function" then pcall(output,"k1 cranked button: "..message) end
+        if type(output)=="function" then pcall(output,"k1 cranked catalogue: "..message) end
     end
     local function matches(value,reference)
         return value==reference or value==asset_hash(reference) or value==hash(reference)
     end
-    local function clone(value,seen)
+    -- Used only on generated gameplay records, never on native datasource/UI objects.
+    local function clone_record(value,seen)
         if type(value)~="table" then return value end
         seen=seen or {};if seen[value] then return seen[value] end
         local result={};seen[value]=result
-        for key,item in pairs(value) do result[key]=clone(item,seen) end
+        for key,item in pairs(value) do result[key]=clone_record(item,seen) end
         return result
     end
-    local function typed_ref(value,reference)
-        return type(value)=="string" and reference or asset_hash(reference)
-    end
-    local function placeholder(controller)
-        if type(popup)=="function" then
-            pcall(popup,type(controller)=="number" and controller or state.controller or 0,
-                "CRANKED","Mode button preview. Maps will be added in the next stage.")
-        end
-    end
-    local function selected_button(controller)
-        local ds=path(rawget(_G,"_DataSources"),"0x08f73707b5922e00","0xf71428806887f67d",
-            "0xe31bc6e346e6be47","0x27bcf3f1bd325909")
-        local get=member(ds,"GetValue")
-        if type(get)~="function" then return false end
-        local ok,value=pcall(get,ds,controller or 0)
-        return ok and matches(value,button.ref)
-    end
-    local first_hook,first_category=#changes,#data.category_additions
+    local first_hook,first_category,first_addition=#changes,#data.category_additions,#data.additions
+    local old_solo,old_squad=data.records[button.solo],data.records[button.squad]
+    local old_template=squad_templates[button.squad]
     local installed,why=pcall(function()
-        assert(type((slot(lobby,"0x837a1ca9e92f5696")))=="function","native menu rows unavailable")
-        assert(type((slot(rawget(_G,"PLAY_MENU"),"0x15b97d8cf426b333")))=="function","native card lookup unavailable")
-        assert(not data.records[button.id],"mode identity already occupied")
+        assert(not old_solo and not old_squad and not data.records[button.id],"CRANKED ID collision")
         for _,spec in ipairs(data.category_additions) do
-            assert(spec.index~=button.id and spec.ref~=button.ref,"category identity already occupied")
+            assert(spec.index~=button.id and spec.ref~=button.ref,"CRANKED category collision")
         end
-        local title="KRONOS_LOCAL_CRANKED_TITLE"
-        local description="KRONOS_LOCAL_CRANKED_DESCRIPTION"
+        for _,entry in ipairs(data.additions) do
+            assert(entry.id~=button.solo and entry.id~=button.squad,"CRANKED playlist collision")
+        end
+        for _,id in ipairs({58,24,223}) do
+            local record=data.records[id]
+            assert(record and record.map=="zm_sat_firefly" and record.asset=="sat_zm_rb"
+                and record.command=="zm_rb" and record.source_gametype=="p_gametype_sat_rb"
+                and not record.local_record,"Standard Ashes template differs: "..id)
+        end
+        local title,description="KRONOS_LOCAL_CRANKED_TITLE","KRONOS_LOCAL_CRANKED_DESCRIPTION"
         local function project_card(card)
             if type(card)~="table" then return card end
-            local result=clone(card)
+            -- Only change the copied asset's top-level labels. Do not traverse datasources.
+            local result=copy(card)
             put(result,"name",title);put(result,"description",description)
             return result
         end
         hook(rawget(_G,"PLAY_MENU"),"0x15b97d8cf426b333",function(original)
             return function(reference,...)
                 if not matches(reference,button.ref) then return original(reference,...) end
-                local result=pack(original(typed_ref(reference,button.source),...))
+                local ref=type(reference)=="string" and button.source or asset_hash(button.source)
+                local result=pack(original(ref,...))
                 result[1]=project_card(result[1]);return unpack(result,1,result.n)
             end
         end)
@@ -2428,120 +2438,233 @@ do
         hook(engine,"Localize",function(original)
             return function(key,...)
                 if key==title or key==hash(title) then return "CRANKED" end
-                if key==description or key==hash(description) then return "Mode preview - maps coming next." end
+                if key==description or key==hash(description) then return "Keep killing to stay alive. Each kill resets your countdown. Run out of time and you explode. Cranked gameplay mechanics coming soon." end
                 return original(key,...)
             end
         end)
         data.category_additions[#data.category_additions+1]={ref=button.ref,index=button.id,
             template_ref=button.source,image_key="0x1a03af08b21e93ad"}
-
-        -- An empty category can be absent from cached native rows. Clone the actual
-        -- Standard mode row at the final reader, not an Ashes/map playlist row.
-        -- Keep native caches and every original row untouched.
-        local function main_group(rows,depth)
-            if type(rows)~="table" or depth>6 then return end
-            local standard,cursed
-            for _,row in ipairs(rows) do
-                if type(row)=="table" then
-                    local ref=member(row,"playlistRef")
-                    if matches(ref,button.source) then standard=row end
-                    if matches(ref,"sat_zm_category_r_mod") then cursed=true end
-                end
-            end
-            if standard and cursed then return rows,standard end
-            for _,row in ipairs(rows) do
-                if type(row)=="table" then
-                    local group,source=main_group(row.rowData,depth+1)
-                    if group then return group,source end
-                end
-            end
+        for _,spec in ipairs({{id=button.solo,source=58},{id=button.squad,source=24}}) do
+            local record=clone_record(data.records[spec.source])
+            record.local_record=true;record.local_mode="CRANKED";record.source_sha256=nil
+            data.records[spec.id]=record
+            data.additions[#data.additions+1]={id=spec.id,template_id=spec.source,
+                category_ref=button.ref,play_menu_ref="sat_zm_firefly",map="zm_sat_firefly",
+                image_key="0x1a03af08b21e93ad",native_validated=false,
+                eligibility="Independent CRANKED category; Standard Ashes template"}
         end
-        local function project(rows,depth,target,standard)
-            if type(rows)~="table" or depth>6 then return rows,false end
-            local result,changed={},false
-            for key,value in pairs(rows) do if type(key)~="number" then result[key]=value end end
-            for _,row in ipairs(rows) do
-                local own=type(row)=="table" and matches(member(row,"playlistRef"),button.ref)
-                if not own then
-                    local value=row
-                    if type(row)=="table" and type(row.rowData)=="table" then
-                        local children,child_changed=project(row.rowData,depth+1,target,standard)
-                        if child_changed then value=copy(row);value.rowData=children;changed=true end
-                    end
-                    result[#result+1]=value
-                    if rows==target and row==standard then
-                        local card=clone(standard)
-                        put(card,"playlistRef",typed_ref(member(standard,"playlistRef"),button.ref))
-                        for _,key in ipairs({"playMenuRef"}) do
-                            local value=member(card,key)
-                            if value~=nil then put(card,key,typed_ref(value,button.ref)) end
-                        end
-                        -- Preserve native category-row sentinels/indices. A category
-                        -- ID is not a playlist ID. Identity is the new playlistRef.
-                        put(card,"name","CRANKED")
-                        put(card,"desc","Modo Frenetico Cranked con temporizador regresivo.")
-                        result[#result+1]=card;changed=true
-                    end
-                else
-                    -- Apply removals even in Additional Modes, with no Standard row.
-                    changed=true
-                end
-            end
-            if changed then
-                local mt=getmetatable(rows);if type(mt)=="table" then setmetatable(result,mt) end
-                return result,true
-            end
-            return rows,false
-        end
-        hook(lobby,"0x837a1ca9e92f5696",function(original)
-            return function(...)
-                local result=pack(original(...))
-                if frontend()==true and not state.request then
-                    local group,source=main_group(result[1],0)
-                    local ok,rows,changed=pcall(project,result[1],0,group,source)
-                    if ok then result[1]=rows end
-                    if ok and group then
-                        button.shown=button.shown+1;button.phase="card_projected"
-                        log("single card in Standard/Cursed group; extra copies removed; maps=0")
-                    else
-                        button.phase="waiting_for_mode_rows"
-                        log(ok and "Standard/Cursed group not found; extra copies removed" or tostring(rows))
-                    end
-                end
-                return unpack(result,1,result.n)
-            end
-        end)
-        -- Install these LAST, outside the original navigation/start wrappers.
-        button.install_guards=function()
-        hook(playlist,"DoPlaylistId",function(original)
-            return function(id,...)
-                if id==button.id or id==1000002001 or selected_button(state.controller) then
-                    state.is_cranked=true
-                    log("cranked match armed in DoPlaylistId")
-                end
-                return original(id,...)
-            end
-        end)
-        hook(flow,"RequestAddMenu",function(original)
-            return function(name,parent,controller,...)
-                if (is(name,"zmmapselection") or is(name,"zmmatchsettings") or is(name,"zmloadoutconfirmation")
-                    or is(name,"zmpubliclobby")) and selected_button(controller) then
-                    state.is_cranked=true
-                    log("cranked match navigating: "..tostring(name))
-                end
-                return original(name,parent,controller,...)
-            end
-        end)
-        end
+        squad_templates[button.squad]=223
     end)
     if not installed then
         for i=#changes,first_hook+1,-1 do
             local change=changes[i];rawset(change.owner,change.key,change.original);changes[i]=nil
         end
         for i=#data.category_additions,first_category+1,-1 do data.category_additions[i]=nil end
+        for i=#data.additions,first_addition+1,-1 do data.additions[i]=nil end
+        data.records[button.solo],data.records[button.squad]=old_solo,old_squad
+        squad_templates[button.squad]=old_template
         button.phase="installation_failed";log(tostring(why))
     else
-        button.phase="installed";log("installed: mode card only, no playlist or launch record")
+        button.phase="registered"
+        log("registered category=sat_zm_category_cranked/1000001003 Solo=1000002001/58 Squad=1000002002/24,223; native UI; no Preview guards")
+    end
+end
+
+-- Extend the working CRANKED category with the other Standard maps.
+do
+    local button=state.cranked_button
+    if button and button.phase=="registered" then
+        local specs={
+            {id=1000002003,source=72,map="zm_sat_ruby",template=72,from_template=true},
+            {id=1000002004,source=50,map="zm_sat_ruby",template=50,alternate=217,from_template=true},
+            {id=1000002005,source=1000000000,map="zm_sat_mantis"},
+            {id=1000002006,source=1000000001,map="zm_sat_mantis"},
+            {id=1000002007,source=1000000002,map="zm_sat_locust"},
+            {id=1000002008,source=1000000003,map="zm_sat_locust"},
+            {id=1000002009,source=1000000004,map="zm_sat_hornet"},
+            {id=1000002010,source=1000000005,map="zm_sat_hornet"},
+            {id=1000002011,source=1000000006,map="zm_sat_scarab"},
+            {id=1000002012,source=1000000007,map="zm_sat_scarab"}
+        }
+        local function clone_record(value)
+            if type(value)~="table" then return value end
+            local result={};for key,item in pairs(value) do result[key]=clone_record(item) end
+            return result
+        end
+        local pending={}
+        local ok,why=pcall(function()
+            for _,spec in ipairs(specs) do
+                assert(not data.records[spec.id] and not squad_templates[spec.id],"CRANKED map ID occupied")
+                for _,category in ipairs(data.category_additions) do
+                    assert(category.index~=spec.id,"CRANKED map ID conflicts with category")
+                end
+                local original=data.records[spec.source]
+                assert(original and original.map==spec.map and original.asset=="sat_zm_rb"
+                    and original.command=="zm_rb" and original.source_gametype=="p_gametype_sat_rb",
+                    "Standard map source differs: "..spec.source)
+                local addition
+                for _,entry in ipairs(data.additions) do
+                    assert(entry.id~=spec.id,"CRANKED map playlist occupied")
+                    if entry.id==spec.source and entry.category_ref==button.source then
+                        assert(not addition,"ambiguous Standard map source")
+                        addition=clone_record(entry)
+                    end
+                end
+                local alternate
+                if spec.from_template then
+                    assert(not original.local_record,"Astra native template differs")
+                    addition={template_id=spec.template,map=spec.map,
+                        cranked_card_from_template=true,image_key="0x1a03af08b21e93ad",
+                        native_validated=false,eligibility="CRANKED: native Standard Astra template"}
+                    alternate=spec.alternate
+                else
+                    assert(addition and addition.map==spec.map and addition.play_menu_ref,
+                        "Standard map addition unavailable")
+                    alternate=squad_templates[spec.source]
+                end
+                if alternate then
+                    local alt=data.records[alternate]
+                    local template=data.records[addition.template_id]
+                    assert(alt and template and alt.map==template.map
+                        and alt.source_gametype=="p_gametype_sat_rb","Standard squad alternate differs")
+                end
+                addition.id=spec.id;addition.category_ref=button.ref
+                local record=clone_record(original)
+                record.local_record=true;record.local_mode="CRANKED";record.source_sha256=nil
+                record.template_id=addition.template_id
+                pending[#pending+1]={id=spec.id,record=record,addition=addition,alternate=alternate}
+            end
+        end)
+        if ok then
+            for _,entry in ipairs(pending) do
+                data.records[entry.id]=entry.record
+                data.additions[#data.additions+1]=entry.addition
+                squad_templates[entry.id]=entry.alternate
+            end
+        end
+        local output=rawget(_G,"DebugPrint")
+        if type(output)=="function" then
+            pcall(output,"k1 cranked catalogue: "..(ok and
+                "five extra maps registered; six maps total; Individual/Peloton"
+                or "extra maps NOT registered; Ashes retained: "..tostring(why)))
+        end
+    end
+end
+
+-- Independent Cursed sibling; keep the working Standard-based CRANKED untouched.
+do
+    local mode={ref="sat_zm_category_cranked_cursed",id=1000001004,
+        source="sat_zm_category_r_mod",phase="installing"}
+    state.cranked_cursed=mode
+    local function matches(value,ref)
+        return value==ref or value==asset_hash(ref) or value==hash(ref)
+    end
+    local function clone_record(value)
+        if type(value)~="table" then return value end
+        local out={};for key,item in pairs(value) do out[key]=clone_record(item) end
+        return out
+    end
+    -- Retain every native party presentation, as the original Cursed catalogue does.
+    local sources={197,172,417,416,414,415,
+        1000000019,1000000018,1000000020,
+        1000000025,1000000024,1000000026,
+        1000000031,1000000030,1000000032,
+        1000000037,1000000036,1000000038}
+    local first_hook,first_category,first_addition=#changes,#data.category_additions,#data.additions
+    local pending={}
+    local ok,why=pcall(function()
+        assert(not data.records[mode.id],"Frenetico Cursed category ID occupied")
+        for _,category in ipairs(data.category_additions) do
+            assert(category.index~=mode.id and category.ref~=mode.ref,"Frenetico Cursed category occupied")
+        end
+        for i,source in ipairs(sources) do
+            local id=1000003000+i
+            assert(not data.records[id] and not squad_templates[id],"Frenetico Cursed playlist ID occupied")
+            for _,category in ipairs(data.category_additions) do assert(category.index~=id,"playlist/category collision") end
+            local record=data.records[source]
+            assert(record and record.source_gametype=="p_gametype_sat_rb_r_mod"
+                and record.asset=="zm_rb_r_mod" and record.command=="zm_rb_r_mod","Cursed source differs")
+            local addition
+            for _,entry in ipairs(data.additions) do
+                assert(entry.id~=id and entry.id~=mode.id,"Frenetico Cursed addition ID occupied")
+                if entry.id==source and entry.category_ref==mode.source then
+                    assert(not addition,"ambiguous Cursed source")
+                    addition=clone_record(entry)
+                end
+            end
+            if record.local_record then
+                assert(addition and addition.map==record.map,"Cursed local addition unavailable")
+            else
+                addition={template_id=source,map=record.map,cranked_card_from_template=true,
+                    image_key="0x1a03af08b21e93ad",native_validated=false,
+                    eligibility="Frenetico Cursed: native Cursed template"}
+            end
+            addition.id=id;addition.category_ref=mode.ref;addition.cranked_cursed=true
+            local copied=clone_record(record)
+            copied.local_record=true;copied.local_mode="CRANKED";copied.local_variant="CURSED"
+            copied.source_sha256=nil;copied.template_id=addition.template_id
+            pending[#pending+1]={id=id,record=copied,addition=addition,alternate=squad_templates[source]}
+        end
+        local title,description="KRONOS_CRANKED_CURSED_TITLE","KRONOS_CRANKED_CURSED_DESCRIPTION"
+        local function card(value)
+            if type(value)~="table" then return value end
+            local out=copy(value);put(out,"name",title);put(out,"description",description)
+            return out
+        end
+        hook(rawget(_G,"PLAY_MENU"),"0x15b97d8cf426b333",function(original)
+            return function(ref,...)
+                if not matches(ref,mode.ref) then return original(ref,...) end
+                local source=type(ref)=="string" and mode.source or asset_hash(mode.source)
+                local result=pack(original(source,...));result[1]=card(result[1])
+                return unpack(result,1,result.n)
+            end
+        end)
+        if type((slot(engine,"0xf06093d047200548")))=="function" then
+            hook(engine,"0xf06093d047200548",function(original)
+                return function(ref,...)
+                    if not matches(ref,mode.ref) then return original(ref,...) end
+                    local result=pack(original(asset_hash(mode.source),...));result[1]=card(result[1])
+                    return unpack(result,1,result.n)
+                end
+            end)
+        end
+        hook(engine,"Localize",function(original)
+            return function(key,...)
+                if key==title or key==hash(title) then return "CRANKED CURSED" end
+                if key==description or key==hash(description) then return "Keep killing to stay alive. Each kill resets your countdown. Run out of time and you explode. Cranked gameplay mechanics coming soon." end
+                return original(key,...)
+            end
+        end)
+        -- Existing ZMRELIC category predicate, also extended by Cursed Survival.
+        -- Delegate this category to native Cursed; do not force relic selections/unlocks.
+        hook(rawget(_G,"ZMRELIC"),"0x60e2e1c5dc3d4efa",function(original)
+            return function(ref,...)
+                if matches(ref,mode.ref) then return original(asset_hash(mode.source),...) end
+                return original(ref,...)
+            end
+        end)
+        data.category_additions[#data.category_additions+1]={ref=mode.ref,index=mode.id,
+            template_ref=mode.source,image_key="0x1a03af08b21e93ad"}
+        for _,entry in ipairs(pending) do
+            data.records[entry.id]=entry.record
+            data.additions[#data.additions+1]=entry.addition
+            squad_templates[entry.id]=entry.alternate
+        end
+    end)
+    if not ok then
+        for i=#changes,first_hook+1,-1 do
+            local change=changes[i];rawset(change.owner,change.key,change.original);changes[i]=nil
+        end
+        for i=#data.category_additions,first_category+1,-1 do data.category_additions[i]=nil end
+        for i=#data.additions,first_addition+1,-1 do data.additions[i]=nil end
+        for _,entry in ipairs(pending) do data.records[entry.id]=nil;squad_templates[entry.id]=nil end
+        mode.phase="installation_failed"
+    else mode.phase="registered" end
+    local output=rawget(_G,"DebugPrint")
+    if type(output)=="function" then
+        pcall(output,"k1 cranked cursed: "..(ok and
+            "registered category=1000001004 playlists=18 maps=6; native Cursed relic predicate"
+            or "NOT installed: "..tostring(why)))
     end
 end
 
@@ -2678,24 +2801,6 @@ if not ok then
     return
 end
 
--- Keep the CRANKED preview guard outside all original start/navigation hooks.
-if state.cranked_button and state.cranked_button.install_guards then
-    local installed,reason=pcall(state.cranked_button.install_guards)
-    if not installed then
-        local output=rawget(_G,"DebugPrint")
-        if type(output)=="function" then pcall(output,"k1 cranked button: guard installation failed: "..tostring(reason)) end
-    end
-end
-local ok_core, core_module = pcall(require, "cranked-core")
-local cranked = (ok_core and type(core_module) == "table") and core_module or rawget(_G, "CrankedCore")
-if type(cranked) == "table" then
-    state.cranked_core = cranked
-end
-local ok_hud, hud_module = pcall(require, "cranked-hud")
-local hud = (ok_hud and type(hud_module) == "table") and hud_module or rawget(_G, "CrankedHUD")
-if type(hud) == "table" then
-    state.cranked_hud = hud
-end
 if catalogue.publish then catalogue.publish("frontEnd.playlists.category") end
 state.catalogue=catalogue
 function state.resolveSavedGame(map,gametype)
@@ -2711,7 +2816,7 @@ function state.resolveSavedGame(map,gametype)
     local best,best_id
     for id,record in pairs(data.records) do
         local record_asset=asset=="zm_rb_rh_mod" and "zm_rb_r_mod" or asset
-        if record.map==map and record.asset==record_asset and not hidden_ids[id]
+        if record.local_mode~="CRANKED" and record.map==map and record.asset==record_asset and not hidden_ids[id]
             and (not record.local_record or catalogue.by_id[id]) then
             if not best or record.maxparty>best.maxparty or (record.maxparty==best.maxparty and id<best_id) then
                 best=record;best_id=id
@@ -2893,3 +2998,6 @@ do
     end
     pcall(install)
 end
+
+pcall(require, "cranked-core")
+pcall(require, "cranked-hud")

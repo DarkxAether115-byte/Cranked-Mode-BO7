@@ -13,6 +13,7 @@ local CrankedCore = {
     party_count = 1,
     difficulty = "classic", -- "casual", "classic", "hardcore"
     is_ultra_cranked = false,
+    is_cursed = false,
     last_kills = 0,
     inducer_disabled = false,
     active_controller = 0,
@@ -127,6 +128,16 @@ function CrankedCore.GetMaxTimeForRound(round_number, party_count, difficulty)
         base_time = 7.5 -- 31+: Ultra Cranked
     end
 
+    -- Variante Cursed: reduccion de tiempo base a 20s (o -5s con minimo de 10s)
+    if CrankedCore.is_cursed then
+        if base_time > 10 then
+            base_time = math.max(10, base_time - 5)
+            if base_time > 20 then
+                base_time = 20
+            end
+        end
+    end
+
     -- Escalado por escuadron (party_count)
     local squad_bonus = 0
     if count == 2 then
@@ -192,6 +203,22 @@ function CrankedCore.AddBonusTime(seconds)
     local sec = tonumber(seconds) or 0
     if sec <= 0 then return end
     CrankedCore.current_time = math.min(CrankedCore.max_time, CrankedCore.current_time + sec)
+end
+
+-- Set active controller
+function CrankedCore.SetController(controller)
+    CrankedCore.active_controller = controller or 0
+end
+
+-- Formally start match and initialize state
+function CrankedCore.StartMatch(controller, is_cursed)
+    CrankedCore.SetController(controller or 0)
+    CrankedCore.is_cursed = (is_cursed == true)
+    CrankedCore.state = 0
+    CrankedCore.inducer_disabled = false
+    CrankedCore.last_kills = 0
+    CrankedCore.detonation_elapsed = 0
+    CrankedCore.ResetTimer()
 end
 
 -- Reset timer to current round limit
