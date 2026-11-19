@@ -15,14 +15,24 @@ El modo Cranked transforma el ritmo tradicional de supervivencia en una carrera 
 
 ---
 
+## Variantes Disponibles
+
+El catalogo integra dos modalidades diferenciadas dentro del selector de juego:
+
+- **Modo Standard:** Experiencia clasica de Cranked con temporizador base de 30 segundos en ronda 1, escalado dinamico por rondas y bonificacion de tiempo segun el tamano del escuadron cooperativo.
+- **Modo Cursed (Maldito):** Modalidad de maxima exigencia con base reducida a 20 segundos en ronda 1, reduccion temporal agresiva, activacion de reliquias especiales y desafio implacable para jugadores experimentados.
+
+---
+
 ## Estado Actual de Desarrollo
 
-El proyecto se encuentra en transicion desde la fase conceptual hacia una arquitectura modular estable.
+El proyecto cuenta con una arquitectura completamente desacoplada y modular:
 
 - [x] **Fase 1 (UI e integracion inicial):** Registro de categoria en el menu local del lobby y asignacion de identificadores visuales en LUI.
 - [x] **Fase 2 (Motor de Gameplay):** Implementacion de la maquina de estados de Cranked, hooks de eliminacion de entidades y temporizador regresivo.
 - [x] **Fase 3 (Interfaz y Feedback):** Indicadores visuales en pantalla (HUD) del tiempo restante, alertas audibles y efectos de detonacion.
 - [x] **Fase 4 (Ajuste y Dificultad):** Modificadores dinamicos segun la ronda y escalado de dificultad por cantidad de jugadores.
+- [x] **Fase 5 (Desacoplamiento y Variante Cursed):** Arranque reactivo guiado por modelo de datos bajo la categoria CRANKED, catalogo dual (Standard y Cursed con playlists dedicadas) y proteccion de partidas guardadas contra corrupcion cruzada.
 
 ---
 
@@ -37,8 +47,8 @@ El proyecto se encuentra en transicion desde la fase conceptual hacia una arquit
 ## Instalacion y Despliegue
 
 ### Metodo 1: Instalacion Rapida (Releases Oficiales)
-1. Descargar el archivo comprimido mas reciente desde la seccion de Releases:
-   `cranked-mode-bo7-v0.5.0-alpha.zip`
+1. Descargar el paquete mas reciente desde la seccion de Releases:
+   `cranked-mode-bo7-v0.6.0-alpha.zip`
 2. Extraer los archivos del paquete:
    - `zm_local_start_post.lua`
    - `cranked-core.lua`
@@ -59,18 +69,19 @@ El proyecto se encuentra en transicion desde la fase conceptual hacia una arquit
 ## Como Jugar
 
 1. Entrar al menu principal de Zombies en Kronos.
-2. Navegar hasta la categoria **CRANKED** en el carrusel de modos.
-3. Seleccionar el mapa deseado (Liberty Falls, Terminus o cualquier mapa local compatible).
-4. Configurar la partida e iniciar.
-5. Al aparecer en el mapa, el temporizador permanecera congelado en espera de tu primera baja.
-6. Al eliminar al primer zombie, el cronometro despertara y comenzara la cuenta regresiva. Mantente en combate constante para no detonar.
+2. Navegar hasta la categoria **CRANKED** en el carrusel de modos del lobby.
+3. Seleccionar la variante deseada (**Standard** o **Cursed**).
+4. Escoger el mapa de combate (Liberty Falls, Terminus o cualquier mapa local compatible).
+5. Configurar la sesion e iniciar la partida.
+6. Al aparecer en el mapa, el temporizador permanecera congelado en espera de tu primera baja.
+7. Al registrar la primera eliminacion, el cronometro despertara y comenzara la cuenta regresiva. Mantente en combate continuo para evitar la detonacion.
 
 ---
 
 ## Flujo de Trabajo y Colaboracion
 
-Para evitar fallos de memoria, cierres inesperados del cliente y mantener el repositorio limpio:
+Para mantener la estabilidad del entorno y evitar fallos de ejecucion:
 
-- **Estructura modular:** Prohibido inyectar bloques masivos sin desacoplar la logica de juego del cargador base.
-- **Control de cambios:** Todo cambio debe probarse localmente antes de enviarse. Prohibido subir archivos desordenados directamente por la interfaz web sin pruebas de ejecucion.
-- **Registro de depuracion:** Utilizar sondas controladas con limites estrictos de salida en consola para no saturar el bucle principal.
+- **Estructura modular:** Separacion estricta entre el cargador de arranque (`zm_local_start_post.lua`), el motor de logica (`cranked-core.lua`) y la interfaz visual (`cranked-hud.lua`).
+- **Control de cambios:** Todo cambio de codigo debe validarse sintacticamente y probarse localmente antes de crear un nuevo release formal.
+- **Aislamiento de estado:** Prohibido interferir con los canales y modelos de datos de partidas clasicas para asegurar la persistencia original.
