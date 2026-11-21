@@ -1,11 +1,12 @@
 --[[
     Cranked Mode - HUD Interface Engine
     Compatible with Call of Duty (Saturn / Kronos)
-    Architecture: Decoupled LUI widget rendering, threat gradient styling, and safe lifecycle management
+    Architecture: Decoupled LUI widget rendering, threat gradient styling,
+    authoritative GSC synchronization, and safe lifecycle management.
 ]]
 
 local CrankedHUD = {
-    version = "1.0.0",
+    version = "1.2.0",
     active = false,
     container = nil,
     status_label = nil,
@@ -27,9 +28,16 @@ end
 -- Check if currently inside active game session
 function CrankedHUD.IsInGame()
     local core = rawget(_G, "CrankedCore")
-    if type(core) == "table" and type(core.IsInGame) == "function" then
-        local ok, val = pcall(core.IsInGame)
-        if ok and val ~= nil then return val == true end
+    if type(core) == "table" then
+        -- If core has already transitioned to an active in-game state (1, 2, 3), match is active
+        local st = tonumber(core.state) or 0
+        if st > 0 then
+            return true
+        end
+        if type(core.IsInGame) == "function" then
+            local ok, val = pcall(core.IsInGame)
+            if ok and val == true then return true end
+        end
     end
 
     local engine = rawget(_G, "Engine")
@@ -79,6 +87,9 @@ local function get_parent_container()
             local ok, root = safe_call(get_root)
             if ok and type(root) == "table" then return root end
         end
+        if type(rawget(lui, "primaryRoot")) == "table" then
+            return lui.primaryRoot
+        end
     end
 
     return nil
@@ -117,120 +128,164 @@ local function safe_set_rgb(elem, r, g, b)
         if not ok then
             pcall(elem.setRGB, elem, {r = r, g = g, b = b})
         end
+    elseif type(elem.SetRGB) == "function" then
+        local ok = pcall(elem.SetRGB, elem, r, g, b)
+        if not ok then
+            pcall(elem.SetRGB, elem, {r = r, g = g, b = b})
+        end
     elseif type(elem.setRGBColor) == "function" then
         pcall(elem.setRGBColor, elem, r, g, b)
     end
 end
 
 local function safe_set_alpha(elem, alpha)
-    if type(elem) ~= "table" or type(elem.setAlpha) ~= "function" then return end
-    pcall(elem.setAlpha, elem, alpha)
-end
-
-local function safe_set_text(elem, text)
-    if type(elem) ~= "table" or type(elem.setText) ~= "function" then return end
-    pcall(elem.setText, elem, tostring(text))
-end
-
-local function safe_set_left_right(elem, is_rel_left, is_rel_right, left, right)
-    if type(elem) ~= "table" or type(elem.setLeftRight) ~= "function" then return end
-    pcall(elem.setLeftRight, elem, is_rel_left, is_rel_right, left, right)
-end
-
-local function safe_set_top_bottom(elem, is_rel_top, is_rel_bottom, top, bottom)
-    if type(elem) ~= "table" or type(elem.setTopBottom) ~= "function" then return end
-    pcall(elem.setTopBottom, elem, is_rel_top, is_rel_bottom, top, bottom)
-end
-
-local function safe_set_alignment(elem, align)
-    if type(elem) ~= "table" or type(elem.setAlignment) ~= "function" then return end
-    pcall(elem.setAlignment, elem, align)
-end
-
--- Remove element from hierarchy safely
-local function safe_close_element(elem)
     if type(elem) ~= "table" then return end
-    if type(elem.close) == "function" then
-        pcall(elem.close, elem)
-    elseif type(elem.getParent) == "function" then
-        local ok, parent = pcall(elem.getParent, elem)
-        if ok and type(parent) == "table" and type(parent.removeElement) == "function" then
-            pcall(parent.removeElement, parent, elem)
-        end
+    alpha = tonumber(alpha) or 0.0
+    if type(elem.setAlpha) == "function" then
+        pcall(elem.setAlpha, elem, alpha)
+    elseif type(elem.SetAlpha) == "function" then
+        pcall(elem.SetAlpha, elem, alpha)
     end
 end
 
--- Initialize and build HUD visual hierarchy
-function CrankedHUD.Build()
-    if CrankedHUD.container ~= nil then return true end
+local function safe_set_text(elem, text)
+    if type(elem) ~= "table" then return end
+    local str = tostring(text or "")
+    if type(elem.setText) == "function" then
+        pcall(elem.setText, elem, str)
+    elseif type(elem.SetText) == "function" then
+        pcall(elem.SetText, elem, str)
+    end
+end
+
+local function safe_set_left_right(elem, is_rel_left, is_rel_right, left, right)
+    if type(elem) ~= "table" then return end
+    if type(elem.setLeftRight) == "function" then
+        pcall(elem.setLeftRight, elem, is_rel_left, is_rel_right, left, right)
+    elseif type(elem.SetAnchorsAndPosition) == "function" then
+        local lf = is_rel_left and 0 or 0.5
+        local rf = is_rel_right and 1 or 0.5
+        pcall(elem.SetAnchorsAndPosition, elem, lf, rf, 0, 0, left, right, 0, 0)
+    end
+end
+
+local function safe_set_top_bottom(elem, is_rel_top, is_rel_bottom, top, bottom)
+    if type(elem) ~= "table" then return end
+    if type(elem.setTopBottom) == "function" then
+        pcall(elem.setTopBottom, elem, is_rel_top, is_rel_bottom, top, bottom)
+    end
+end
+
+local function safe_set_alignment(elem, align)
+    if type(elem) ~= "table" then return end
+    if type(elem.setAlignment) == "function" then
+        pcall(elem.setAlignment, elem, align)
+    elseif type(elem.SetAlignment) == "function" then
+        pcall(elem.SetAlignment, elem, align)
+    end
+end
+
+-- Remove element safely from hierarchy
+local function safe_close(elem)
+    if type(elem) ~= "table" then return end
+    if type(elem.closeTree) == "function" then
+        safe_call(elem.closeTree, elem)
+    elseif type(elem.close) == "function" then
+        safe_call(elem.close, elem)
+    end
+end
+
+-- Safely add child to parent
+local function safe_add_element(parent, child)
+    if type(parent) ~= "table" or type(child) ~= "table" then return false end
+    if type(parent.addElement) == "function" then
+        return safe_call(parent.addElement, parent, child)
+    end
+    return false
+end
+
+-- Destroy and release entire HUD widget tree
+function CrankedHUD.Destroy()
+    if CrankedHUD.container ~= nil then
+        safe_close(CrankedHUD.container)
+        CrankedHUD.container = nil
+    end
+    CrankedHUD.status_label = nil
+    CrankedHUD.timer_label = nil
+    CrankedHUD.bar_bg = nil
+    CrankedHUD.bar_fill = nil
+    CrankedHUD.active = false
+    CrankedHUD.last_sfx_second = -1
+end
+
+-- Construct HUD element hierarchy
+function CrankedHUD.Create()
+    if CrankedHUD.container ~= nil then
+        return true
+    end
 
     local parent = get_parent_container()
-    if not parent then return false end
+    if not parent then
+        return false
+    end
 
-    -- Container element: centered at top (-150 to 150 px, top 40 to 120 px)
     local container = create_ui_element("UIElement")
     if not container then return false end
 
+    -- Safe setup anchors: Top center (X: -150 to +150, Y: 40 to 120)
     safe_set_left_right(container, false, false, -150, 150)
     safe_set_top_bottom(container, true, false, 40, 120)
-    safe_set_alpha(container, 1.0)
+    safe_set_alpha(container, 0.0) -- Start hidden until state > 0
 
-    -- Status label (Top portion: 0 to 22 px)
-    local status_label = create_ui_element("UIStyledText") or create_ui_element("UIText")
+    -- 1. Status Title (CRANKED / ULTRA CRANKED / ESPERA PRIMER KILL)
+    local status_label = create_ui_element("UIText") or create_ui_element("UIStyledText") or create_ui_element("UIElement")
     if status_label then
         safe_set_left_right(status_label, true, true, 0, 0)
         safe_set_top_bottom(status_label, true, false, 0, 22)
         safe_set_alignment(status_label, 2) -- Center alignment
         safe_set_text(status_label, "ESPERA PRIMER KILL")
-        safe_set_rgb(status_label, 0.4, 0.8, 0.9)
-        safe_set_alpha(status_label, 0.8)
-        if type(container.addElement) == "function" then
-            pcall(container.addElement, container, status_label)
-        end
+        safe_set_rgb(status_label, 0.1, 0.9, 1.0)
+        safe_set_alpha(status_label, 0.85)
+        safe_add_element(container, status_label)
     end
 
-    -- Digital timer label (Middle portion: 24 to 62 px)
-    local timer_label = create_ui_element("UIStyledText") or create_ui_element("UIText")
+    -- 2. Countdown Digits (XX.Xs)
+    local timer_label = create_ui_element("UIText") or create_ui_element("UIStyledText") or create_ui_element("UIElement")
     if timer_label then
         safe_set_left_right(timer_label, true, true, 0, 0)
-        safe_set_top_bottom(timer_label, true, false, 24, 62)
+        safe_set_top_bottom(timer_label, true, false, 22, 62)
         safe_set_alignment(timer_label, 2) -- Center alignment
-        safe_set_text(timer_label, "--.-s")
-        safe_set_rgb(timer_label, 0.85, 0.95, 1.0)
-        safe_set_alpha(timer_label, 1.0)
-        if type(container.addElement) == "function" then
-            pcall(container.addElement, container, timer_label)
-        end
+        safe_set_text(timer_label, "30.0s")
+        safe_set_rgb(timer_label, 0.1, 0.9, 1.0)
+        safe_set_alpha(timer_label, 0.75)
+        safe_add_element(container, timer_label)
     end
 
-    -- Progress bar background (Bottom portion: width 260px, centered from -130 to 130, top 66 to 74)
+    -- 3. Gauge Background Bar
     local bar_bg = create_ui_element("UIImage") or create_ui_element("UIElement")
     if bar_bg then
-        safe_set_left_right(bar_bg, false, false, -130, 130)
-        safe_set_top_bottom(bar_bg, true, false, 66, 74)
+        safe_set_left_right(bar_bg, false, false, -132, 132)
+        safe_set_top_bottom(bar_bg, true, false, 64, 76)
         safe_set_rgb(bar_bg, 0.05, 0.05, 0.08)
-        safe_set_alpha(bar_bg, 0.6)
-        if type(container.addElement) == "function" then
-            pcall(container.addElement, container, bar_bg)
-        end
+        safe_set_alpha(bar_bg, 0.7)
+        safe_add_element(container, bar_bg)
     end
 
-    -- Progress bar fill (Inside background: starts at -130)
+    -- 4. Gauge Dynamic Fill Bar
     local bar_fill = create_ui_element("UIImage") or create_ui_element("UIElement")
     if bar_fill then
         safe_set_left_right(bar_fill, false, false, -130, 130)
         safe_set_top_bottom(bar_fill, true, false, 66, 74)
-        safe_set_rgb(bar_fill, 0.85, 0.95, 1.0)
-        safe_set_alpha(bar_fill, 0.9)
-        if type(container.addElement) == "function" then
-            pcall(container.addElement, container, bar_fill)
-        end
+        safe_set_rgb(bar_fill, 0.1, 0.9, 1.0)
+        safe_set_alpha(bar_fill, 0.8)
+        safe_add_element(container, bar_fill)
     end
 
     -- Attach container to parent root
-    if type(parent.addElement) == "function" then
-        local ok = pcall(parent.addElement, parent, container)
-        if not ok then return false end
+    local attached = safe_add_element(parent, container)
+    if not attached then
+        safe_close(container)
+        return false
     end
 
     CrankedHUD.container = container
@@ -239,116 +294,115 @@ function CrankedHUD.Build()
     CrankedHUD.bar_bg = bar_bg
     CrankedHUD.bar_fill = bar_fill
     CrankedHUD.active = true
-    CrankedHUD.last_sfx_second = -1
-
     return true
 end
 
--- Cleanup and destroy all HUD visual nodes
-function CrankedHUD.Destroy()
-    if CrankedHUD.container ~= nil then
-        safe_close_element(CrankedHUD.container)
-    end
-    CrankedHUD.container = nil
-    CrankedHUD.status_label = nil
-    CrankedHUD.timer_label = nil
-    CrankedHUD.bar_bg = nil
-    CrankedHUD.bar_fill = nil
-    CrankedHUD.timer_element = nil
-    CrankedHUD.timer_running = false
-    CrankedHUD.active = false
-    CrankedHUD.last_sfx_second = -1
-    CrankedHUD.blink_counter = 0
-end
-
--- Main render update tick
+-- Frame update handler (20Hz refresh)
 function CrankedHUD.Update()
-    if not CrankedHUD.IsInGame() then
-        if CrankedHUD.active then
-            CrankedHUD.Destroy()
-        end
-        return
-    end
-
-    if not CrankedHUD.active or CrankedHUD.container == nil then
-        local built = CrankedHUD.Build()
-        if not built then return end
-    end
-
     local core = rawget(_G, "CrankedCore")
     if type(core) ~= "table" then return end
 
-    -- Drive core state machine and countdown tick (50ms interval, skip redundant IsInGame check)
-    if type(core.Tick) == "function" then
-        pcall(core.Tick, 0.05, true)
+    -- 1. Respetar Dvar scr_cranked: Si scr_cranked == 0, ocultar/destruir inmediatamente
+    local scr_cranked
+    if type(core.GetDvarInt) == "function" then
+        scr_cranked = core.GetDvarInt("scr_cranked", nil)
+    end
+    if scr_cranked == 0 then
+        if CrankedHUD.container ~= nil then
+            safe_set_alpha(CrankedHUD.container, 0.0)
+        end
+        CrankedHUD.active = false
+        return
+    end
+
+    -- 2. Verificar sesion en juego
+    local in_game = CrankedHUD.IsInGame()
+    if not in_game then
+        if CrankedHUD.container ~= nil then
+            safe_set_alpha(CrankedHUD.container, 0.0)
+        end
+        CrankedHUD.active = false
+        return
+    end
+
+    -- 3. Crear elementos si no existen
+    if CrankedHUD.container == nil then
+        local ok = CrankedHUD.Create()
+        if not ok or CrankedHUD.container == nil then return end
     end
 
     local state = tonumber(core.state) or 0
-    local current_time = tonumber(core.current_time) or 0
-    local max_time = tonumber(core.max_time) or 30
-    if max_time <= 0 then max_time = 30 end
+    local current_time = tonumber(core.current_time) or 0.0
+    if current_time < 0.0 or current_time ~= current_time then
+        current_time = 0.0
+    end
 
-    local party_count = tonumber(core.party_count) or 1
+    local max_time = tonumber(core.max_time) or 30.0
+    if max_time <= 0.0 or max_time ~= max_time then
+        max_time = 30.0
+    end
 
     CrankedHUD.blink_counter = (CrankedHUD.blink_counter + 1) % 20
     local is_blink_on = CrankedHUD.blink_counter < 10
 
-    -- State 0: Inactive / In lobby
+    -- State 0: Inactive / Lobby
     if state == 0 then
         safe_set_alpha(CrankedHUD.container, 0.0)
+        CrankedHUD.active = false
         return
     end
 
+    -- Mostrar contenedor activo
     safe_set_alpha(CrankedHUD.container, 1.0)
+    CrankedHUD.active = true
 
-    -- State 1: Waiting for first kill
+    -- State 1: Esperando primera baja
     if state == 1 then
-        local wait_text = (party_count > 1) and "ESPERA PRIMER KILL (COOP)" or "ESPERA PRIMER KILL"
-        safe_set_text(CrankedHUD.status_label, wait_text)
-        safe_set_rgb(CrankedHUD.status_label, 0.4, 0.8, 0.9)
-        safe_set_alpha(CrankedHUD.status_label, 0.8)
+        safe_set_text(CrankedHUD.status_label, "ESPERA PRIMER KILL")
+        safe_set_rgb(CrankedHUD.status_label, 0.1, 0.9, 1.0)
+        safe_set_alpha(CrankedHUD.status_label, 0.85)
 
         safe_set_text(CrankedHUD.timer_label, string.format("%.1fs", max_time))
-        safe_set_rgb(CrankedHUD.timer_label, 0.4, 0.8, 0.9)
-        safe_set_alpha(CrankedHUD.timer_label, 0.7)
+        safe_set_rgb(CrankedHUD.timer_label, 0.1, 0.9, 1.0)
+        safe_set_alpha(CrankedHUD.timer_label, 0.75)
 
-        -- Full bar in standby
+        -- Barra llena en estado de espera
         safe_set_left_right(CrankedHUD.bar_fill, false, false, -130, 130)
-        safe_set_rgb(CrankedHUD.bar_fill, 0.4, 0.8, 0.9)
+        safe_set_rgb(CrankedHUD.bar_fill, 0.1, 0.9, 1.0)
         safe_set_alpha(CrankedHUD.bar_fill, 0.5)
 
         CrankedHUD.last_sfx_second = -1
         return
     end
 
-    -- State 2: Cranked Active
+    -- State 2: Frenetico Activo
     if state == 2 then
-        local is_ultra = (core.is_ultra_cranked == true) or ((tonumber(core.current_round) or 1) >= 31)
+        local round_num = tonumber(core.current_round) or 1
+        local is_ultra = (core.is_ultra_cranked == true) or (round_num >= 31)
         if is_ultra then
             safe_set_text(CrankedHUD.status_label, "ULTRA CRANKED")
         else
             safe_set_text(CrankedHUD.status_label, "CRANKED")
         end
-        safe_set_text(CrankedHUD.timer_label, string.format("%.1fs", math.max(0, current_time)))
+        safe_set_text(CrankedHUD.timer_label, string.format("%.1fs", current_time))
 
-        -- Color gradient by threat level
+        -- Gradiente de color por nivel de amenaza
         local r, g, b, alpha
         if current_time > 10.0 then
-            -- Safe: Cyan / White
+            -- Seguro: Cian / Blanco electrico
             r, g, b = 0.85, 0.95, 1.0
             alpha = 1.0
             CrankedHUD.last_sfx_second = -1
         elseif current_time >= 5.0 then
-            -- Warning: Amber / Orange
+            -- Advertencia: Ambar / Naranja
             r, g, b = 1.0, 0.65, 0.1
             alpha = 1.0
             CrankedHUD.last_sfx_second = -1
         else
-            -- Critical: Flashing Red
+            -- Critico (< 5s): Rojo parpadeante y pulso audible
             r, g, b = 1.0, 0.15, 0.15
             alpha = is_blink_on and 1.0 or 0.35
 
-            -- Audible warning: 1 pulse per second in critical zone
             local sec = math.floor(current_time)
             if sec ~= CrankedHUD.last_sfx_second and sec >= 0 then
                 CrankedHUD.last_sfx_second = sec
@@ -358,7 +412,7 @@ function CrankedHUD.Update()
 
         local status_alpha = alpha
         if is_ultra then
-            -- Dynamic fast blinking for ULTRA CRANKED status label
+            -- Parpadeo rapido para status label en ULTRA CRANKED
             local fast_blink = (CrankedHUD.blink_counter % 4) < 2
             status_alpha = fast_blink and 1.0 or 0.25
         end
@@ -369,7 +423,7 @@ function CrankedHUD.Update()
         safe_set_rgb(CrankedHUD.timer_label, r, g, b)
         safe_set_alpha(CrankedHUD.timer_label, alpha)
 
-        -- Progress bar proportional to remaining time
+        -- Barra de progreso proporcional al tiempo restante sin desincronizacion ni parpadeos
         local ratio = math.min(1.0, math.max(0.0, current_time / max_time))
         local fill_right = -130 + math.floor(260 * ratio)
         safe_set_left_right(CrankedHUD.bar_fill, false, false, -130, fill_right)
@@ -378,7 +432,7 @@ function CrankedHUD.Update()
         return
     end
 
-    -- State 3: Detonated / Time Out
+    -- State 3: Detonado / Tiempo Agotado
     if state == 3 then
         safe_set_text(CrankedHUD.status_label, "TIEMPO AGOTADO")
         local r, g, b = 1.0, 0.1, 0.1
@@ -391,7 +445,7 @@ function CrankedHUD.Update()
         safe_set_rgb(CrankedHUD.timer_label, r, g, b)
         safe_set_alpha(CrankedHUD.timer_label, alpha)
 
-        -- Empty bar
+        -- Barra completamente vacia
         safe_set_left_right(CrankedHUD.bar_fill, false, false, -130, -130)
         safe_set_rgb(CrankedHUD.bar_fill, r, g, b)
         safe_set_alpha(CrankedHUD.bar_fill, alpha)
